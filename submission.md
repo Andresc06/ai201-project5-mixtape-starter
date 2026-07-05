@@ -46,3 +46,32 @@
 - **Services raise `ValueError` for not-found/invalid-input, which routes translate to 400/404.** There's no custom exception hierarchy — just this one convention, applied consistently.
 - **Association tables carry extra metadata when the relationship isn't a plain many-to-many** (`playlist_entries` has `position`/`added_by`/`added_at`; `friendships` and `song_tags` don't need extra columns and stay plain join tables).
 - **Tests double as bug specifications.** Several test names/comments literally say what the bug is and what the fix should produce (e.g. `# Bug causes this to return 4`, `# Should be 1, bug causes it to be 3`, `# Should increment, not reset`), which is a strong signal for where to look and how to verify a fix.
+
+## Bugs to Fix
+
+I attempted to reproduce all five before picking three:
+
+- **Issue #3 (duplicate search results) did NOT reproduce** in this environment, so I swapped it out. Running `tests/test_search.py` (all 5 tests pass, including `test_search_no_duplicates_multi_tag_song`) and manually querying a 3-tag song both showed exactly one result, not three. I traced this to the installed **SQLAlchemy 2.0.51**: the legacy `Query.all()` API used in `search_service.py` (`db.session.query(Song).outerjoin(...).all()`) automatically de-duplicates ORM entities by identity when the query selects whole mapped objects, even without an explicit `.distinct()`. So the join-fanout code path that would produce duplicates on an older SQLAlchemy version doesn't actually manifest as a bug against this project's pinned dependencies. Since I could not trigger the reported symptom, I moved to a different issue instead of fixing something I couldn't observe.
+- I chose **Issues #1, #4, and #5** to fix, since all three reproduced deterministically on the first attempt.
+
+### Issue #1 — Listening streak keeps resetting (Sunday)
+
+**How I reproduced it:** Ran the existing `tests/test_streaks.py::test_streak_increments_on_sunday`, which calls `update_listening_streak()` directly with a Saturday timestamp (streak → 1), then a Sunday timestamp one day later. Expected the streak to increment to 2 (one day gap, weekend included); got 1 instead — the code takes the `else` branch and resets. Confirmed with `pytest tests/test_streaks.py -v`:
+
+Root cause is visible directly in `streak_service.py:73`: `elif days_since_last == 1 and today.weekday() != 6:` — the extra `and today.weekday() != 6` clause excludes Sundays from the normal "listened yesterday → increment" path, so any user who listens on a Sunday after listening Saturday gets their streak reset to 1 instead of incremented, even though only one calendar day passed.
+
+**The root cause:** The `elif` branch responsible for incrementing the streak on a one-day gap was gated by `today.weekday() != 6` in addition to `days_since_last == 1`. `datetime.weekday()` returns `6` for Sunday, so whenever the current listen happened to fall on a Sunday, this extra condition evaluated to `False` even when the user had listened exactly one day prior — sending execution into the `else` branch, which resets `listening_streak` to `1`. There was no comment or docstring rule justifying a Sunday exception; the streak rules only mention "same day," "yesterday," and "more than one day," with no weekend carve-out. The condition was simply extraneous logic that happened to break every week for any user listening on a Sunday after listening Saturday.
+
+**My fix and side-effect check:** Removed the `and today.weekday() != 6` clause, leaving `elif days_since_last == 1:` to match the documented rule exactly. Verified with `pytest tests/test_streaks.py -v`, including `test_streak_increments_on_sunday` and the other boundary tests that were already passing.
+
+### Issue #4 — No notification when a friend rates your song
+
+**How I reproduced it:** Wrote a small script creating a `sharer` user, a `rater` user, and a song shared by `sharer`. Called `get_notifications(sharer.id)` (empty, as expected), then called `rate_song(rater.id, song.id, 5)` to have `rater` give the song 5 stars, then checked `get_notifications(sharer.id)` again — still empty.
+
+Root cause: `rate_song()` in `notification_service.py` upserts the `Rating` row and commits, but never calls `create_notification()`. Contrast with `add_to_playlist()` a few lines above, which explicitly notifies `song.shared_by` after adding a song. The two actions are structurally parallel but only one of them was wired up to actually notify.
+
+### Issue #5 — Last song in a playlist never shows up
+
+**How I reproduced it:** Ran the existing `tests/test_playlists.py`, which seeds a playlist with 5 songs at positions 1-5 and calls `get_playlist_songs()`. Both playlist tests fail.
+
+Root cause is visible directly in `playlist_service.py`: `return [song.to_dict() for song in songs[:-1]]`. The songs are correctly queried and ordered by `position` ascending, but the `[:-1]` slice unconditionally drops the last element of that ordered list before returning it, so whichever song is actually last in the playlist is always omitted from the response, regardless of playlist length.
