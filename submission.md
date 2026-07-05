@@ -52,7 +52,7 @@
 I attempted to reproduce all five before picking three:
 
 - **Issue #3 (duplicate search results) did NOT reproduce** in this environment, so I swapped it out. Running `tests/test_search.py` (all 5 tests pass, including `test_search_no_duplicates_multi_tag_song`) and manually querying a 3-tag song both showed exactly one result, not three. I traced this to the installed **SQLAlchemy 2.0.51**: the legacy `Query.all()` API used in `search_service.py` (`db.session.query(Song).outerjoin(...).all()`) automatically de-duplicates ORM entities by identity when the query selects whole mapped objects, even without an explicit `.distinct()`. So the join-fanout code path that would produce duplicates on an older SQLAlchemy version doesn't actually manifest as a bug against this project's pinned dependencies. Since I could not trigger the reported symptom, I moved to a different issue instead of fixing something I couldn't observe.
-- I chose **Issues #1, #4, and #5** to fix, since all three reproduced deterministically on the first attempt.
+- I chose **Issues #1, #4, and #5** to fix as the required three, since all three reproduced deterministically on the first attempt, then also fixed **Issue #2** as a fourth.
 
 ### Issue #1 — Listening streak keeps resetting (Sunday)
 
@@ -83,3 +83,13 @@ Root cause is visible directly in `streak_service.py:73`: `elif days_since_last 
 **The root cause:** The songs were correctly queried and ordered by `position` ascending, but the final list comprehension sliced with `songs[:-1]` before building the response, unconditionally discarding the last song in the ordered list.
 
 **My fix and side-effect check:** Changed `songs[:-1]` to `songs`, so all queried songs are returned. Verified with `pytest tests/test_playlists.py -v`: `test_playlist_returns_all_songs` and `test_playlist_returns_songs_in_order`, now pass, and `test_empty_playlist_returns_empty_list` still passes, confirming the fix doesn't break the empty-playlist boundary on the other side of the slice.
+
+### Issue #2 — Friends Listening Now shows people from yesterday
+
+**How I reproduced it:** No existing test covers `feed_service.py`, so I wrote a manual script: created two friends, one `ListeningEvent` for the friend at 20 hours before "now," and called `get_friends_listening_now()` for the other user. It returned that 20-hour-old event as a "listening now" entry — a listen from roughly yesterday showing up as if it were happening now.
+
+**How I found the root cause:** Started at `routes/feed.py` with `listening_now()`, which calls `services.feed_service.get_friends_listening_now()`. That function computes `cutoff = datetime.now(timezone.utc) - RECENT_THRESHOLD` and filters `ListeningEvent.listened_at >= cutoff` — the filtering logic itself is correct and does exactly what "friends listening now" should do. The only place to look was the value of `RECENT_THRESHOLD`, defined at the top of the file as `timedelta(hours=24)`. That immediately looked too generous for a "listening now" feature, and `seed_data.py` confirmed it: its comments explicitly say events seeded at 10-20 minutes old ("within the past 30 minutes") "should appear in listening now," while events seeded starting at 2 hours old ("Older events") "should NOT appear in listening now after fix." A 24-hour window lets everything from 2 hours up through very-nearly-24-hours old through, directly contradicting that stated intent.
+
+**The root cause:** `RECENT_THRESHOLD` was set to 24 hours, so any friend activity from within the last day — not just genuinely "now" — passed the `listened_at >= cutoff` filter and got surfaced as if it were happening live. The feature is named and used for "listening now," but the threshold effectively implemented "listened at some point today," which is a materially different, much weaker guarantee. Nothing else in the function was wrong; the recency window itself was simply too wide for what the feature promises.
+
+**My fix and side-effect check:** Changed `RECENT_THRESHOLD` from `timedelta(hours=24)` to `timedelta(minutes=30)`, matching the window `seed_data.py`'s comments describe as "recent." Verified with a manual script covering both sides of the new boundary: a 20-hour-old event now correctly returns 0 feed entries (previously 1); a 10-minute-old event still returns 1; and when both a 10-minute-old and a 2-hour-old event exist for the same friend, the feed still returns exactly 1 entry (the most recent one), confirming the per-friend dedup logic is unaffected by the threshold change.
