@@ -103,3 +103,14 @@ Root cause is visible directly in `streak_service.py:73`: `elif days_since_last 
 **The root cause:** `search_songs()` performed an `outerjoin` against `song_tags` that was never used for filtering or data selection, tags are loaded independently through the `Song.tags` relationship. Joining a one-to-many association table without aggregating or deduplicating means the query returns one row per matching join pair, so a song with 3 tags produces 3 rows for the same song. On SQLAlchemy versions/APIs that return raw rows instead of auto-deduplicating identity-mapped ORM entities, this manifests exactly as "the same song shows up multiple times in search," matching the reported symptom.
 
 **My fix and side-effect check:** Removed the unnecessary `outerjoin(song_tags, ...)` (and the now-unused `Tag`/`song_tags` imports) from `search_songs()`, since the query only ever filtered on `Song.title`/`Song.artist` and tags come from the separate `Song.tags` relationship regardless. Verified with `pytest tests/test_search.py -v` and a manual check that a 3-tag song still returns exactly 1 result with all 3 tags present.
+
+## AI Usage
+
+I used AI tools mainly to help clean up and organize my write-up in
+submission.md. It also helped me find the bugs. For each issue,
+I read through the relevant service file and the corresponding test
+file on my own, formed a hypothesis about what was going wrong, and
+with the help of AI fix the issues. I also asked it a couple of general questions, like the
+difference between `weekday()` and `isoweekday()` in Python, to
+double check my understanding of the streak fix before committing to
+it. Moreover, I used AI to help me write the commit messages and the final submission write-up. Moreover, for the stretch features, I used AI to help me write the code for the notification service and the corresponding tests. Those issues were harder to debug and I needed to make sure I was using the correct syntax and methods for the notification service. Overall, AI was a helpful tool in my workflow, but I made sure to verify its suggestions and understand the changes being made before committing them.
