@@ -68,7 +68,11 @@ Root cause is visible directly in `streak_service.py:73`: `elif days_since_last 
 
 **How I reproduced it:** Wrote a small script creating a `sharer` user, a `rater` user, and a song shared by `sharer`. Called `get_notifications(sharer.id)` (empty, as expected), then called `rate_song(rater.id, song.id, 5)` to have `rater` give the song 5 stars, then checked `get_notifications(sharer.id)` again — still empty.
 
-Root cause: `rate_song()` in `notification_service.py` upserts the `Rating` row and commits, but never calls `create_notification()`. Contrast with `add_to_playlist()` a few lines above, which explicitly notifies `song.shared_by` after adding a song. The two actions are structurally parallel but only one of them was wired up to actually notify.
+**How I found the root cause:** Started at `routes/songs.py::rate()`, which calls `services.notification_service.rate_song()`. Read `rate_song()` top-down: it validates the score, loads the `Song`/`User`, upserts the `Rating`, commits, and returns — no call to `create_notification()` anywhere in the function. Scrolled up to `add_to_playlist()` in the same file, which handles a structurally identical situation ("a friend did something to a song you shared") and does call `create_notification(user_id=song.shared_by, ...)` after its main action. Comparing the two side by side confirmed `rate_song()` was simply missing the equivalent call — not a logic error inside an existing notification path, but an absent step.
+
+**The root cause:** `rate_song()` in `notification_service.py` upserts the `Rating` row and commits, but never calls `create_notification()`. Contrast with `add_to_playlist()` a few lines above, which explicitly notifies `song.shared_by` after adding a song. The two actions are structurally parallel but only one of them was wired up to actually notify.
+
+**My fix and side-effect check:** Added a `create_notification()` call at the end of `rate_song()`, guarded by `song.shared_by != user_id` (mirroring `add_to_playlist()`'s `song.shared_by != added_by_user_id` check) so rating your own shared song doesn't notify yourself. Verified with a manual script: a friend's rating now creates a `song_rated` notification for the sharer, rating your own song creates none, and updating an existing rating notifies again.
 
 ### Issue #5 — Last song in a playlist never shows up
 
