@@ -11,6 +11,10 @@ difference between `weekday()` and `isoweekday()` in Python, to
 double check my understanding of the streak fix before committing to
 it. Moreover, I used AI to help me write the commit messages and the final submission write-up. Moreover, for the stretch features, I used AI to help me write the code for the notification service and the corresponding tests. Those issues were harder to debug and I needed to make sure I was using the correct syntax and methods for the notification service. Overall, AI was a helpful tool in my workflow, but I made sure to verify its suggestions and understand the changes being made before committing them.
 
+## Image of the Fixes
+
+<img src="https://i.imgur.com/sLewKLb.png" alt="Screenshot of the fixes" width="600"/>
+
 ## Codebase Map
 
 ### App structure
